@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     secret_key: str = "change-me-in-production"
     allowed_origins: list[str] = ["http://localhost:3000"]
     port: int = Field(default=8000, alias="PORT")
+    log_level: str = "INFO"
 
     # Database (PostgreSQL)
     # Railway provides DATABASE_URL as postgres:// — we convert to asyncpg

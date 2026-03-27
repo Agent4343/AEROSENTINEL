@@ -5,20 +5,49 @@ from typing import AsyncIterator
 import redis.asyncio as aioredis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.config import settings
-from app.db.database import engine
+from app.db.database import engine, Base
 
 logger = logging.getLogger("aerosentinel")
+
+# Configure logging
+logging.basicConfig(
+    level=getattr(logging, settings.log_level if hasattr(settings, "log_level") else "INFO"),
+    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # --- Startup ---
-    # Verify database connection
-    async with engine.connect() as conn:
-        await conn.execute(__import__("sqlalchemy").text("SELECT 1"))
-    logger.info("Database connected")
+    # Database: try to connect with retries
+    db_ok = False
+    import asyncio
+
+    for attempt in range(1, 6):
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+            db_ok = True
+            logger.info("Database connected")
+            break
+        except Exception as exc:
+            logger.warning("Database connection attempt %d/5 failed: %s", attempt, exc)
+            if attempt < 5:
+                await asyncio.sleep(2 * attempt)
+
+    if not db_ok:
+        logger.error("Database unavailable after 5 attempts — starting without DB")
+    else:
+        # Auto-create tables if they don't exist (for Railway fresh deploys)
+        # Import all models so Base.metadata has them registered
+        import app.models  # noqa: F401
+
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Database tables verified/created")
 
     # Connect to Redis (optional — degrades gracefully)
     if settings.redis_enabled:
@@ -54,12 +83,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         app.state.mqtt = None
 
+    app.state.db_ok = db_ok
+
     yield
 
     # --- Shutdown ---
-    if app.state.mqtt is not None:
+    if getattr(app.state, "mqtt", None) is not None:
         await app.state.mqtt.disconnect()
-    if app.state.redis is not None:
+    if getattr(app.state, "redis", None) is not None:
         await app.state.redis.aclose()
     await engine.dispose()
 
@@ -89,6 +120,7 @@ async def health_check():
     return {
         "status": "ok",
         "service": settings.app_name,
-        "redis": app.state.redis is not None,
+        "database": getattr(app.state, "db_ok", False),
+        "redis": getattr(app.state, "redis", None) is not None,
         "mqtt": getattr(app.state, "mqtt", None) is not None,
     }
