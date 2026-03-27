@@ -10,9 +10,15 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     debug: bool = False
     secret_key: str = "change-me-in-production"
-    allowed_origins: list[str] = ["http://localhost:3000"]
+    allowed_origins: str = "*"
     port: int = Field(default=8000, alias="PORT")
     log_level: str = "INFO"
+
+    @property
+    def cors_origins(self) -> list[str]:
+        if self.allowed_origins == "*":
+            return ["*"]
+        return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
 
     # Database (PostgreSQL)
     # Railway provides DATABASE_URL as postgres:// — we convert to asyncpg

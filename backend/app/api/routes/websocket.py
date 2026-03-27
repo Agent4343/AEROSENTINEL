@@ -8,6 +8,8 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from redis.asyncio import Redis
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["websocket"])
@@ -15,8 +17,6 @@ router = APIRouter(tags=["websocket"])
 TELEMETRY_CHANNEL = "aerosentinel:telemetry"
 DETECTIONS_CHANNEL = "aerosentinel:detections"
 ALERTS_CHANNEL = "aerosentinel:alerts"
-
-from app.config import settings
 
 REDIS_URL = settings.redis_url
 
