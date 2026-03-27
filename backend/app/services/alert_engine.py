@@ -22,6 +22,10 @@ from app.services.ai_pipeline import Detection
 logger = logging.getLogger("aerosentinel.alert_engine")
 
 
+# ---------------------------------------------------------------------------
+# Types
+# ---------------------------------------------------------------------------
+
 class Severity(IntEnum):
     LOW = 0
     MEDIUM = 1
@@ -31,6 +35,8 @@ class Severity(IntEnum):
 
 @dataclass
 class TriageRule:
+    """Defines how a detection class maps to an alert severity."""
+
     class_name: str
     min_confidence: float = 0.5
     severity: Severity = Severity.MEDIUM
@@ -40,6 +46,8 @@ class TriageRule:
 
 @dataclass
 class Alert:
+    """An emitted alert."""
+
     alert_id: str = ""
     severity: Severity = Severity.MEDIUM
     class_name: str = ""
@@ -58,8 +66,13 @@ class Alert:
         return d
 
 
+# Callback type for automated actions
 ActionCallback = Callable[[Alert], Coroutine[Any, Any, None]]
 
+
+# ---------------------------------------------------------------------------
+# Default triage rules for emergency response
+# ---------------------------------------------------------------------------
 
 DEFAULT_RULES: List[TriageRule] = [
     TriageRule("fire", 0.50, Severity.CRITICAL, auto_dispatch=True, description="Active fire detected"),
@@ -80,13 +93,17 @@ DEFAULT_RULES: List[TriageRule] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Engine
+# ---------------------------------------------------------------------------
+
 class AlertEngine:
     """Evaluates detections against triage rules, deduplicates, and triggers
     automated actions."""
 
     REDIS_CHANNEL = "aerosentinel:alerts"
     DEFAULT_DEDUP_RADIUS_M = 30.0
-    DEFAULT_DEDUP_WINDOW_S = 300.0
+    DEFAULT_DEDUP_WINDOW_S = 300.0  # 5 minutes
 
     def __init__(
         self,
@@ -97,15 +114,24 @@ class AlertEngine:
     ) -> None:
         self._redis_url = redis_url
         self._redis: Optional[redis.Redis] = None
+
         self._rules: Dict[str, TriageRule] = {}
         for rule in (rules or DEFAULT_RULES):
             self._rules[rule.class_name] = rule
+
         self._dedup_radius = dedup_radius_m
         self._dedup_window = dedup_window_s
+
+        # Recent alerts for deduplication: list of (class_name, lat, lon, timestamp)
         self._recent_alerts: List[Alert] = []
+
+        # Counters for rate-of-change detection keyed by class_name
         self._detection_counts: Dict[str, List[float]] = {}
         self._rate_window_s = 60.0
+
+        # Action callbacks
         self._action_callbacks: List[ActionCallback] = []
+
         self._alert_counter = 0
 
     async def start(self) -> None:
@@ -116,11 +142,24 @@ class AlertEngine:
         if self._redis is not None:
             await self._redis.aclose()
             self._redis = None
+        logger.info("AlertEngine stopped")
 
     def register_action(self, callback: ActionCallback) -> None:
+        """Register a callback invoked for high/critical severity alerts."""
         self._action_callbacks.append(callback)
 
+    # -- evaluation ---------------------------------------------------------
+
     async def evaluate(self, detections: List[Detection]) -> List[Alert]:
+        """Evaluate a list of detections and return any new alerts.
+
+        Steps:
+          1. Match each detection to a triage rule.
+          2. Check confidence threshold.
+          3. Deduplicate against recent alerts.
+          4. Check rate-of-change escalation.
+          5. Emit alerts and trigger actions.
+        """
         now = time.time()
         self._prune_old_alerts(now)
         alerts: List[Alert] = []
@@ -129,12 +168,15 @@ class AlertEngine:
             rule = self._rules.get(det.class_name)
             if rule is None:
                 continue
+
             if det.confidence < rule.min_confidence:
                 continue
+
             if self._is_duplicate(det, now):
                 continue
 
             severity = self._compute_severity(det, rule, now)
+
             self._alert_counter += 1
             alert = Alert(
                 alert_id=f"ALR-{self._alert_counter:06d}",
@@ -150,25 +192,46 @@ class AlertEngine:
             )
             alerts.append(alert)
             self._recent_alerts.append(alert)
+
             logger.info(
                 "Alert %s: %s [%s] conf=%.2f @ (%.6f, %.6f)",
-                alert.alert_id, alert.class_name, alert.severity.name,
-                alert.confidence, alert.latitude, alert.longitude,
+                alert.alert_id,
+                alert.class_name,
+                alert.severity.name,
+                alert.confidence,
+                alert.latitude,
+                alert.longitude,
             )
+
+            # Publish to Redis
             await self._publish_alert(alert)
+
+            # Trigger automated actions for high+ severity
             if severity >= Severity.HIGH:
                 await self._trigger_actions(alert)
 
         return alerts
 
+    # -- deduplication ------------------------------------------------------
+
     def _is_duplicate(self, det: Detection, now: float) -> bool:
+        """Check whether a matching alert was already emitted recently in
+        the same geographical area."""
         for prev in self._recent_alerts:
             if prev.class_name != det.class_name:
                 continue
             if now - prev.timestamp > self._dedup_window:
                 continue
-            dist = haversine_distance(prev.latitude, prev.longitude, det.latitude, det.longitude)
+            dist = haversine_distance(
+                prev.latitude, prev.longitude, det.latitude, det.longitude
+            )
             if dist < self._dedup_radius:
+                logger.debug(
+                    "Suppressed duplicate %s (%.1f m from %s)",
+                    det.class_name,
+                    dist,
+                    prev.alert_id,
+                )
                 return True
         return False
 
@@ -176,17 +239,40 @@ class AlertEngine:
         cutoff = now - self._dedup_window * 2
         self._recent_alerts = [a for a in self._recent_alerts if a.timestamp > cutoff]
 
-    def _compute_severity(self, det: Detection, rule: TriageRule, now: float) -> Severity:
+    # -- severity computation -----------------------------------------------
+
+    def _compute_severity(
+        self, det: Detection, rule: TriageRule, now: float
+    ) -> Severity:
+        """Compute final severity considering base rule, confidence boost, and
+        rate-of-change escalation."""
         severity = rule.severity
+
+        # Confidence boost: very high confidence bumps severity up one level
         if det.confidence > 0.85 and severity < Severity.CRITICAL:
             severity = Severity(severity + 1)
+
+        # Rate-of-change escalation: many detections of same class in short
+        # window bumps severity
         timestamps = self._detection_counts.setdefault(det.class_name, [])
         timestamps.append(now)
-        self._detection_counts[det.class_name] = [t for t in timestamps if now - t < self._rate_window_s]
+        # Prune old timestamps
+        self._detection_counts[det.class_name] = [
+            t for t in timestamps if now - t < self._rate_window_s
+        ]
         rate = len(self._detection_counts[det.class_name])
         if rate >= 10 and severity < Severity.CRITICAL:
             severity = Severity(min(severity + 1, Severity.CRITICAL))
+            logger.info(
+                "Rate escalation for %s: %d detections in %.0f s",
+                det.class_name,
+                rate,
+                self._rate_window_s,
+            )
+
         return severity
+
+    # -- actions ------------------------------------------------------------
 
     async def _trigger_actions(self, alert: Alert) -> None:
         for callback in self._action_callbacks:
@@ -199,11 +285,20 @@ class AlertEngine:
         if self._redis is None:
             return
         try:
-            await self._redis.publish(self.REDIS_CHANNEL, json.dumps(alert.to_dict(), default=str))
+            await self._redis.publish(
+                self.REDIS_CHANNEL,
+                json.dumps(alert.to_dict(), default=str),
+            )
         except Exception:
             logger.exception("Redis publish failed for alert %s", alert.alert_id)
 
-    def get_recent_alerts(self, severity_min: Severity = Severity.LOW, limit: int = 100) -> List[Alert]:
+    # -- queries ------------------------------------------------------------
+
+    def get_recent_alerts(
+        self,
+        severity_min: Severity = Severity.LOW,
+        limit: int = 100,
+    ) -> List[Alert]:
         filtered = [a for a in self._recent_alerts if a.severity >= severity_min]
         filtered.sort(key=lambda a: a.timestamp, reverse=True)
         return filtered[:limit]
