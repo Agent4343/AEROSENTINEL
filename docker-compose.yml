@@ -1,0 +1,170 @@
+version: "3.9"
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL + TimescaleDB
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aerosentinel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_db_password}
+      POSTGRES_DB: ${POSTGRES_DB:-aerosentinel}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aerosentinel} -d ${POSTGRES_DB:-aerosentinel}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aerosentinel
+
+  # ---------------------------------------------------------------------------
+  # Redis
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aerosentinel
+
+  # ---------------------------------------------------------------------------
+  # EMQX MQTT Broker
+  # ---------------------------------------------------------------------------
+  emqx:
+    image: emqx/emqx:5.8
+    restart: unless-stopped
+    environment:
+      EMQX_NAME: aerosentinel_emqx
+      EMQX_HOST: 0.0.0.0
+      EMQX_DASHBOARD__DEFAULT_USERNAME: ${EMQX_DASHBOARD__DEFAULT_USERNAME:-admin}
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD__DEFAULT_PASSWORD:-changeme_emqx_dashboard}
+    ports:
+      - "1883:1883"     # MQTT TCP
+      - "8083:8083"     # MQTT WebSocket
+      - "8084:8084"     # MQTT WebSocket/SSL
+      - "18083:18083"   # EMQX Dashboard
+    volumes:
+      - emqx_data:/opt/emqx/data
+    healthcheck:
+      test: ["CMD", "emqx", "ctl", "status"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    networks:
+      - aerosentinel
+
+  # ---------------------------------------------------------------------------
+  # MinIO (S3-compatible Object Storage)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-aerosentinel}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-changeme_minio_secret}
+    ports:
+      - "9000:9000"   # API
+      - "9001:9001"   # Console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    networks:
+      - aerosentinel
+
+  # ---------------------------------------------------------------------------
+  # Backend (FastAPI)
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://aerosentinel:changeme_db_password@postgres:5432/aerosentinel}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      MQTT_BROKER_HOST: ${MQTT_BROKER_HOST:-emqx}
+      MQTT_BROKER_PORT: ${MQTT_BROKER_PORT:-1883}
+      MQTT_USERNAME: ${MQTT_USERNAME:-aerosentinel}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-changeme_mqtt_password}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-aerosentinel}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-changeme_minio_secret}
+      MINIO_BUCKET: ${MINIO_BUCKET:-aerosentinel-media}
+      MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
+      AI_MODEL_PATH: ${AI_MODEL_PATH:-/app/models/detection_model.onnx}
+      SECRET_KEY: ${SECRET_KEY:-changeme_generate_a_64_char_random_string_here}
+      DEBUG: ${DEBUG:-false}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - backend_models:/app/models
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      emqx:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - aerosentinel
+
+  # ---------------------------------------------------------------------------
+  # Frontend (React + Nginx)
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        REACT_APP_MAPBOX_TOKEN: ${MAPBOX_TOKEN:-pk.placeholder}
+        REACT_APP_API_BASE_URL: http://localhost:8000
+        REACT_APP_WS_BASE_URL: ws://localhost:8000
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - aerosentinel
+
+volumes:
+  postgres_data:
+  redis_data:
+  emqx_data:
+  minio_data:
+  backend_models:
+
+networks:
+  aerosentinel:
+    driver: bridge
