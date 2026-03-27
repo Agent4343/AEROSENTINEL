@@ -20,7 +20,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+RUN chmod +x start.sh
+
 EXPOSE ${PORT}
 
-# Railway sets PORT env var — uvicorn reads it at runtime
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 2 --loop uvloop
+CMD ["sh", "start.sh"]
