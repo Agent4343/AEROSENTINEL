@@ -1,0 +1,11 @@
+# Railway / Nixpacks build config for AeroSentinel frontend
+# Uses the Dockerfile for multi-stage build with nginx
+
+[phases.install]
+cmds = ["npm ci"]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "npx serve -s build -l ${PORT:-3000}"

@@ -1,0 +1,10 @@
+# Railway / Nixpacks build config for AeroSentinel backend
+
+[phases.setup]
+aptPkgs = ["libgl1", "libglib2.0-0", "libgomp1"]
+
+[phases.install]
+cmds = ["pip install -r requirements.txt"]
+
+[start]
+cmd = "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 2 --loop uvloop"
