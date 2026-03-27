@@ -1,0 +1,111 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* =========================================================================
+   AeroSentinel - Emergency Operations Centre Base Styles
+   ========================================================================= */
+
+@layer base {
+  html {
+    @apply bg-slate-950 text-slate-100 antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  body {
+    @apply m-0 p-0 min-h-screen overflow-hidden;
+    font-family: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+
+  /* Scrollbar styling for the dark ops theme */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-slate-700 rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-slate-600;
+  }
+
+  /* Firefox scrollbar */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #334155 transparent;
+  }
+}
+
+@layer components {
+  /* Utility class for scrollable panels */
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  /* Pulsing status indicator */
+  .status-pulse {
+    @apply relative;
+  }
+  .status-pulse::after {
+    content: "";
+    @apply absolute inset-0 rounded-full animate-ping opacity-30;
+    background: inherit;
+  }
+
+  /* Mapbox popup overrides for dark theme */
+  .mapboxgl-popup-content {
+    @apply bg-slate-900 text-slate-200 rounded-lg border border-slate-700 shadow-xl !important;
+    padding: 8px 12px !important;
+  }
+
+  .mapboxgl-popup-tip {
+    border-top-color: #0f172a !important;
+  }
+
+  .mapboxgl-popup-close-button {
+    @apply text-slate-400 hover:text-slate-200;
+  }
+
+  /* Mapbox controls dark theme */
+  .mapboxgl-ctrl-group {
+    @apply bg-slate-900 border-slate-700 !important;
+  }
+
+  .mapboxgl-ctrl-group button {
+    @apply border-b-slate-700 !important;
+  }
+
+  .mapboxgl-ctrl-group button + button {
+    @apply border-t-slate-700 !important;
+  }
+
+  .mapboxgl-ctrl-icon {
+    filter: invert(1);
+  }
+}
+
+@layer utilities {
+  /* Glass effect for overlays */
+  .glass {
+    @apply bg-slate-900/80 backdrop-blur-md border border-slate-700/50;
+  }
+
+  /* Emergency glow effects */
+  .glow-fire {
+    box-shadow: 0 0 20px 4px rgba(239, 68, 68, 0.15);
+  }
+
+  .glow-water {
+    box-shadow: 0 0 20px 4px rgba(59, 130, 246, 0.15);
+  }
+
+  .glow-amber {
+    box-shadow: 0 0 20px 4px rgba(251, 191, 36, 0.15);
+  }
+}
