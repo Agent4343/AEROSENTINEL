@@ -11,8 +11,8 @@ ENV REACT_APP_MAPBOX_TOKEN=$REACT_APP_MAPBOX_TOKEN \
 
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-RUN npm ci --production=false
+COPY package.json ./
+RUN npm install
 
 COPY . .
 RUN npm run build
@@ -22,8 +22,7 @@ FROM nginx:1.27-alpine
 
 COPY --from=build /app/build /usr/share/nginx/html
 
-# Railway sets PORT env var — nginx must listen on it
-# Uses envsubst to inject PORT at runtime
+# Railway sets PORT env var -- nginx must listen on it
 RUN printf 'server {\n\
     listen ${PORT};\n\
     server_name _;\n\
@@ -34,17 +33,14 @@ RUN printf 'server {\n\
         try_files $uri $uri/ /index.html;\n\
     }\n\
 \n\
-    # Cache static assets\n\
     location /static/ {\n\
         expires 1y;\n\
         add_header Cache-Control "public, immutable";\n\
     }\n\
 }\n' > /etc/nginx/templates/default.conf.template
 
-# Remove default config so the template takes over
 RUN rm -f /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
 
-# nginx docker image supports envsubst via templates/ dir automatically
 CMD ["nginx", "-g", "daemon off;"]
